@@ -1,9 +1,25 @@
+import json
 import os
 import smtplib
 from email.mime.text import MIMEText
 from typing import Any, Literal
 
 import httpx
+
+
+def _load_webui_settings() -> dict:
+	"""读取 Web UI 保存的设置（Bark 等），供签到进程与 Web UI 共用。
+
+	路径由 CHECKIN_WEBUI_SETTINGS_FILE 指定，默认 data/webui_settings.json。
+	Web UI 里保存的值优先于 .env 环境变量。
+	"""
+	path = os.getenv('CHECKIN_WEBUI_SETTINGS_FILE', 'data/webui_settings.json')
+	try:
+		with open(path, 'r', encoding='utf-8') as f:
+			data = json.load(f)
+		return data if isinstance(data, dict) else {}
+	except (OSError, ValueError):
+		return {}
 
 
 class NotificationKit:
@@ -26,6 +42,13 @@ class NotificationKit:
 		self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
 		self.bark_key = os.getenv('BARK_KEY')
 		self.bark_server = os.getenv('BARK_SERVER', 'https://api.day.app')
+
+		# Web UI 里配置的 Bark 优先于 .env（覆盖上面的环境变量值）
+		webui_settings = _load_webui_settings()
+		if webui_settings.get('bark_key'):
+			self.bark_key = str(webui_settings['bark_key']).strip()
+		if webui_settings.get('bark_server'):
+			self.bark_server = str(webui_settings['bark_server']).strip()
 
 	def _post_json(self, service: str, url: str, data: dict[str, Any]) -> httpx.Response:
 		with httpx.Client(timeout=30.0) as client:

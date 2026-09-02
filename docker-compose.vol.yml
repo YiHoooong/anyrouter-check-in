@@ -1,0 +1,28 @@
+# Docker 命名卷模式（可选覆盖配置，懒人模式）
+#
+# 用法：
+#   指定位置持久化（默认，数据存在宿主机 <仓库目录>/data/）：
+#     sudo docker compose up -d
+#
+#   命名卷模式（懒得管宿主机文件，数据交给 Docker 管理）：
+#     sudo docker compose -f docker-compose.yml -f docker-compose.vol.yml up -d
+#
+# 说明：
+#   - 两种模式是二选一的替代，不要同时起（会抢 8090 端口和同名容器）。
+#   - 命名卷模式下，账号/日志/截图都存在 Docker 卷里（`docker volume ls` 可见，
+#     名字形如 anyrouter-check-in_checkin_data），不占宿主机目录；
+#     容器重建、`docker compose down` 都不丢数据。
+#   - 想彻底清空重来：
+#       sudo docker compose -f docker-compose.yml -f docker-compose.vol.yml down -v
+#     或容器停止后： sudo docker volume rm anyrouter-check-in_checkin_data
+#   - 本文件不改镜像/代码：容器里看到的 /app/data 两种模式完全一样，
+#     只是挂载目标不同。Web UI 里填的账号照常写到 /app/data/accounts.json。
+
+services:
+  checkin:
+    volumes:
+      # 用命名卷替换上面的宿主机 bind mount（compose 按容器内路径合并，此处覆盖）
+      - checkin_data:/app/data
+
+volumes:
+  checkin_data:

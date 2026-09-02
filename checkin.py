@@ -73,16 +73,50 @@ def generate_balance_hash(balances):
 
 
 def parse_cookies(cookies_data):
-	"""解析 cookies 数据"""
+	"""解析 cookies 数据。
+
+	宽容处理常见粘贴格式：
+	- dict：原样返回
+	- "k=v; k2=v2"：标准 Cookie 字符串
+	- "Cookie: session=xxx; ..."：整段请求头（自动去掉前缀）
+	- 一个裸值（例如从 F12 复制的 session 值，含 base64 末尾的 = 填充）：当作 session
+	- JSON：{"session": "..."} 或 {"cookies": {"session": "..."}}
+	"""
 	if isinstance(cookies_data, dict):
 		return cookies_data
 
 	if isinstance(cookies_data, str):
+		raw = cookies_data.strip()
+		if not raw:
+			return {}
+
+		# JSON 形式
+		if raw.startswith('{'):
+			try:
+				data = json.loads(raw)
+				if isinstance(data, dict):
+					if isinstance(data.get('cookies'), dict):
+						return data['cookies']
+					return data
+			except json.JSONDecodeError:
+				pass
+
+		# 去掉 "Cookie:" 前缀
+		if raw.lower().startswith('cookie:'):
+			raw = raw.split(':', 1)[1].strip()
+
 		cookies_dict = {}
-		for cookie in cookies_data.split(';'):
+		parts = raw.replace('\n', ';').split(';')
+		for cookie in parts:
 			if '=' in cookie:
 				key, value = cookie.strip().split('=', 1)
-				cookies_dict[key] = value
+				if key:
+					cookies_dict[key.strip()] = value.strip()
+
+		# 没有解析出 session：若整个输入是单个值（无分号，可能是带 = 填充的
+		# base64 session 值，会被误切成 k=v），直接整段作为 session
+		if 'session' not in cookies_dict and len(parts) == 1:
+			cookies_dict = {'session': raw}
 		return cookies_dict
 	return {}
 
@@ -510,6 +544,7 @@ async def main():
 	notification_content = []
 	current_balances = {}
 	account_check_in_details = {}
+	successful_account_names: set[str] = set()
 	need_notify = False
 	balance_changed = False
 
@@ -519,6 +554,7 @@ async def main():
 			success, user_info_before, user_info_after = await check_in_account(account, i, app_config)
 			if success:
 				success_count += 1
+				successful_account_names.add(account.get_display_name(i))
 
 			should_notify_this_account = False
 
@@ -597,6 +633,18 @@ async def main():
 				if not any(account_name in item for item in notification_content):
 					notification_content.append(account_result)
 
+	# 成功签到也推送：每个成功账号至少补一条内容（余额变化已用详细格式覆盖的自动跳过）
+	if successful_account_names:
+		need_notify = True
+		for i, account in enumerate(accounts):
+			account_key = f'account_{i + 1}'
+			account_name = account.get_display_name(i)
+			if account_name in successful_account_names and not any(account_name in item for item in notification_content):
+				if account_key in account_check_in_details:
+					notification_content.append(format_check_in_notification(account_check_in_details[account_key]))
+				else:
+					notification_content.append(f'[SUCCESS] {account_name}')
+
 	if current_balance_hash:
 		save_balance_hash(current_balance_hash)
 
@@ -631,9 +679,9 @@ async def main():
 
 		print(notify_content)
 		notify.push_message('AnyRouter Check-in Alert', notify_content, msg_type='text')
-		print('[NOTIFY] Notification sent due to failures or balance changes')
+		print('[NOTIFY] Notification sent (successes / failures / balance changes)')
 	else:
-		print('[INFO] All accounts successful and no balance changes detected, notification skipped')
+		print('[INFO] Notification skipped (no check-in result to report)')
 
 	sys.exit(0 if success_count > 0 else 1)
 

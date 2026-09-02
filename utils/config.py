@@ -181,11 +181,30 @@ class AccountConfig:
 
 
 def load_accounts_config() -> list[AccountConfig] | None:
-	"""从环境变量加载账号配置"""
-	accounts_str = os.getenv('ANYROUTER_ACCOUNTS')
-	if not accounts_str:
-		print('ERROR: ANYROUTER_ACCOUNTS environment variable not found')
-		return None
+	"""从账号文件或环境变量加载账号配置（文件优先）。
+
+	优先读取 CHECKIN_ACCOUNTS_FILE 指定的 JSON 文件（与 ANYROUTER_ACCOUNTS
+	同格式的数组）；文件不存在或内容为空时，回落读取环境变量
+	ANYROUTER_ACCOUNTS。
+	"""
+	accounts_str = None
+
+	accounts_file = os.getenv('CHECKIN_ACCOUNTS_FILE', 'data/accounts.json')
+	if os.path.isfile(accounts_file):
+		try:
+			with open(accounts_file, 'r', encoding='utf-8') as f:
+				file_content = f.read().strip()
+			if file_content:
+				accounts_str = file_content
+				print(f'[INFO] Loaded accounts from {accounts_file}')
+		except Exception as e:
+			print(f'[WARNING] Failed to read accounts file {accounts_file}: {e}, falling back to env')
+
+	if accounts_str is None:
+		accounts_str = os.getenv('ANYROUTER_ACCOUNTS')
+		if not accounts_str:
+			print('ERROR: ANYROUTER_ACCOUNTS environment variable not found')
+			return None
 
 	try:
 		accounts_data = json.loads(accounts_str)

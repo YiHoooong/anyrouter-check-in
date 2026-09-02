@@ -1,0 +1,36 @@
+# AnyRouter 签到容器
+#
+# 数据持久化两种模式（二选一，不要同时起两个容器）：
+#   - 默认（指定位置）：数据存宿主机 <仓库目录>/data/，账号文件可直接编辑
+#       sudo docker compose up -d
+#   - 懒人模式（Docker 卷）：加一个 -f 参数，数据交给 Docker 卷管理
+#       sudo docker compose -f docker-compose.yml -f docker-compose.vol.yml up -d
+#   详见 README「数据持久化：宿主机指定位置 or Docker 卷」一节。
+services:
+  checkin:
+    build: .
+    image: local/anyrouter-checkin
+    container_name: checkin
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # 时区：对齐 anyrouter 的北京时间节奏
+      TZ: Asia/Shanghai
+      # 定时签到间隔（小时），默认 6 小时，对齐 GitHub Actions 的 cron 节奏
+      CHECKIN_INTERVAL_HOURS: "6"
+      # 容器启动时立即跑一轮（便于观察），再进入定时循环
+      CHECKIN_RUN_ON_START: "true"
+      # 账号文件（Web UI 写入，签到脚本读取；优先于 .env 的 ANYROUTER_ACCOUNTS）
+      CHECKIN_ACCOUNTS_FILE: /app/data/accounts.json
+      # Web UI 设置文件（Bark Key 等；签到进程读取，优先于 .env 的 BARK_KEY）
+      CHECKIN_WEBUI_SETTINGS_FILE: /app/data/webui_settings.json
+      # Web UI 端口
+      CHECKIN_WEBUI_PORT: "8090"
+    ports:
+      # 只暴露到本机：账号含敏感 cookie，不对局域网开放
+      - "127.0.0.1:8090:8090"
+    volumes:
+      # 持久化（默认，指定位置）：账号/余额 hash/浏览器登录态/调试截图/运行日志
+      # 挂载到宿主机 <仓库目录>/data/，方便直接编辑。
+      # 懒人模式用 Docker 命名卷：加 -f docker-compose.vol.yml 即可覆盖这里。
+      - ./data:/app/data

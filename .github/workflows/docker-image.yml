@@ -1,0 +1,69 @@
+name: Build Docker Image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    # 只有这些文件变化才触发重建，避免白跑
+    paths:
+      - 'Dockerfile'
+      - 'docker/**'
+      - 'webui.py'
+      - 'checkin.py'
+      - 'utils/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      # 多架构（amd64 + arm64）需要 QEMU 模拟；若只想要 amd64，
+      # 删掉本步并把下面 platforms 改为 linux/amd64 即可
+      - name: 设置 QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 提取镜像元数据（tag/label）
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GitHub Actions 缓存：Chromium 层（约 200MB）跨构建复用
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

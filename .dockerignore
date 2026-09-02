@@ -1,0 +1,16 @@
+.git
+.env
+data/
+tests/
+checkin_screenshots/
+.browser_profiles/
+balance_hash.txt
+*.log
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml

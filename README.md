@@ -374,6 +374,74 @@ uv run python -m cloakbrowser install
 uv run checkin.py
 ```
 
+## 本地 Docker 运行（可选）
+
+不想手动跑、想要本地常驻定时签到的话，可以直接用 Docker。镜像内置 CloakBrowser 隐身 Chromium（构建期已下载并装好系统依赖），容器启动即跑一轮，之后默认每 6 小时签到一次。
+
+```bash
+# 1. 准备配置（从示例复制，填入真实账号，JSON 必须是单行格式）
+cp .env.example .env
+# 编辑 .env，至少配置 ANYROUTER_ACCOUNTS，通知方式按需填
+
+# 2. 构建并启动（首次构建需下载 Chromium，约 1~2 分钟）
+sudo docker compose up -d --build
+
+# 3. 查看日志
+sudo docker compose logs -f checkin
+```
+
+常用命令：
+
+```bash
+# 手动立即签到一次（测试用，跑完即退出）
+sudo docker compose run --rm checkin once
+
+# 停止
+sudo docker compose down
+```
+
+说明：
+
+- 仓库根目录的 `data/` 是持久化目录，容器把余额 hash（`balance_hash.txt`）、浏览器登录态（`.browser_profiles/`）、调试截图（`checkin_screenshots/`）都写在这里，重建容器不丢失登录状态
+- 可用环境变量调整节奏：`CHECKIN_INTERVAL_HOURS`（定时间隔小时，默认 `6`）、`CHECKIN_RUN_ON_START`（启动是否立即跑一轮，默认 `true`）
+- 如果你的环境不能直连这些平台，在 `.env` 里设置 `CHECKIN_PROXY_URL`（容器访问宿主机代理可用 `http://host.docker.internal:7890`）或按需运行 `scripts/setup_mihomo_proxy.sh`
+- 容器以 root 运行，`data/` 下文件属主为 root；本地查看日志/截图用 `sudo`
+
+### 数据持久化：指定位置 / Docker 卷 / 裸跑
+
+容器把账号、余额 hash、浏览器登录态、调试截图、运行日志都写到 `/app/data`。镜像自带 `VOLUME /app/data`，**不挂任何东西时 Docker 也会自动创建一个匿名卷**，所以「存哪」完全由运行时怎么挂决定，镜像和 CI 不关心。三种玩法任选，**不要同时起两个 compose 容器**（会抢 8090 端口）：
+
+| 模式 | 启动方式 | 数据在哪 | 想清空 |
+|---|---|---|---|
+| **指定位置**（默认） | `sudo docker compose up -d` | 宿主机 `<仓库目录>/data/`，可直接编辑 | `sudo rm -rf data/` |
+| **Docker 命名卷**（懒人模式） | `sudo docker compose -f docker-compose.yml -f docker-compose.vol.yml up -d` | Docker 管理的卷（`docker volume ls` 可见，名如 `anyrouter-check-in_checkin_data`），不占宿主机目录 | `sudo docker compose -f docker-compose.yml -f docker-compose.vol.yml down -v` |
+| **裸跑**（匿名卷） | `sudo docker run -d --name checkin -p 127.0.0.1:8090:8090 --env-file .env local/anyrouter-checkin` | Docker 匿名卷（因镜像的 `VOLUME /app/data` 自动创建，`docker volume ls` 里是随机名） | `sudo docker rm -v checkin`，或清所有孤儿卷 `sudo docker volume prune` |
+
+> 懒人模式适合「跑一次签到用完就走」：账号在 Web UI 里临时填，不想在宿主机留任何文件。数据放 Docker 卷里，容器重建、`docker compose down` 都不丢；真要重来，`down -v` 一次清空，账号重新填即可。裸跑则更彻底——删容器（`docker rm -v`）连数据一起没了，每次都是全新开始。
+>
+> 三种方式容器里看到的 `/app/data` 完全一样，`CHECKIN_ACCOUNTS_FILE`、Web UI、定时循环都不需要改，镜像也没有区别。CI 构建的 GHCR 镜像（多架构）可直接替换 `local/anyrouter-checkin`。
+
+### Web UI（账号管理 + 手动签到）
+
+容器启动时会自动拉起一个小 Web 界面（端口 `8090`，仅本机可访问），可以可视化提交/管理账号（session cookie 登录）、一键触发签到并查看运行日志：
+
+1. 浏览器打开 http://localhost:8090
+2. 「添加账号」：选择平台（anyrouter / agentrouter），在 Cookie 框里粘贴浏览器 F12 复制出来的 session 值（也支持直接粘贴整段 Cookie 请求头），填 api_user，保存
+3. 点「立即签到」触发一次签到，下方日志区实时滚动显示运行结果
+4. 账号保存到 `data/accounts.json`，**优先于** `.env` 里的 `ANYROUTER_ACCOUNTS`，定时签到自动读取；手动触发与定时循环用文件锁互斥，不会同时运行
+
+Web UI 为 Python 标准库实现、零第三方依赖，独立于签到脚本（`webui.py`）。本地开发时也可直接 `uv run webui.py` 启动，端口用 `CHECKIN_WEBUI_PORT` 调整（默认 8090）。
+
+#### Bark 推送
+
+Web UI 底部有「Bark 推送」卡片，配置后签到结果会推送到手机：
+
+1. 填 `Bark Key`（Bark App 打开时看到的设备 key），服务器留空用默认 `https://api.day.app`
+2. 点「保存设置」，再点「测试推送」验证（手机应收到一条测试消息）
+3. 之后**每次签到成功或失败都会推送**一次（汇总：各账号结果 + 成功/失败统计），失败时推送的是错误原因；没配 Bark（或其他通知渠道）时静默跳过
+
+设置存到 `data/webui_settings.json`（权限 0600），**优先于** `.env` 里的 `BARK_KEY` / `BARK_SERVER` —— 在 Web UI 改后无需重启，下次签到自动生效。也可用脚本自身的 `BARK_KEY` 环境变量直接配，二者选其一即可。
+
 ## 测试
 
 ```bash
