@@ -30,8 +30,13 @@ PROVIDER_CHOICES = ('anyrouter', 'agentrouter')
 
 
 def get_accounts_file() -> str:
-	"""账号文件路径，由 CHECKIN_ACCOUNTS_FILE 覆盖，默认 data/accounts.json（相对运行目录）。"""
-	return os.getenv('CHECKIN_ACCOUNTS_FILE', 'data/accounts.json')
+	"""账号文件路径，由 CHECKIN_ACCOUNTS_FILE 覆盖，默认 data/accounts.json（相对运行目录）。
+
+	启动后一律以绝对路径为准：触发签到等子进程场景会以其它 cwd 运行，
+	相对路径会二次解析导致找不到文件（LXC 等丢失环境变量的部署曾踩过坑）。
+	"""
+	p = os.getenv('CHECKIN_ACCOUNTS_FILE', 'data/accounts.json')
+	return os.path.abspath(p)
 
 
 def get_data_dir() -> str:
@@ -71,11 +76,15 @@ def get_log_file() -> str:
 
 
 def get_settings_file() -> str:
-	"""设置文件路径：默认与账号文件同目录（webui_settings.json），CHECKIN_WEBUI_SETTINGS_FILE 覆盖。"""
-	return os.getenv(
+	"""设置文件路径：默认与账号文件同目录（webui_settings.json），CHECKIN_WEBUI_SETTINGS_FILE 覆盖。
+
+	与 get_accounts_file 一样固定为绝对路径（参见其注释）。
+	"""
+	p = os.getenv(
 		'CHECKIN_WEBUI_SETTINGS_FILE',
 		os.path.join(os.path.dirname(get_accounts_file()) or '.', 'webui_settings.json'),
 	)
+	return os.path.abspath(p)
 
 
 def load_settings() -> dict:
@@ -208,12 +217,19 @@ def trigger_checkin() -> tuple[str, str]:
 	if probe.returncode != 0:
 		return 'busy', '已有签到正在运行（定时任务或手动触发），请稍后再试'
 
+	# 把账号/设置文件以绝对路径传给子进程：checkin.py 按自身 cwd 解析相对路径，
+	# 若不带这两个环境变量，会和这里（cwd=data_dir）解析出不一致的文件
+	env = dict(os.environ)
+	env['CHECKIN_ACCOUNTS_FILE'] = get_accounts_file()
+	env['CHECKIN_WEBUI_SETTINGS_FILE'] = get_settings_file()
+
 	cmd = f'{shlex.quote(sys.executable)} {shlex.quote(CHECKIN_SCRIPT)} >> {shlex.quote(get_log_file())} 2>&1'
 	subprocess.Popen(
 		['flock', '-n', get_lock_file(), '-c', cmd],
 		stdout=subprocess.DEVNULL,
 		stderr=subprocess.DEVNULL,
 		cwd=data_dir,
+		env=env,
 	)
 	return 'started', '签到已触发，请稍后查看运行日志'
 
