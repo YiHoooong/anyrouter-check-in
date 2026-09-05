@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from checkin import parse_cookies
 from utils.notify import NotificationKit
@@ -134,9 +134,7 @@ def extract_api_user(session: str) -> str | None:
 	（仍是 base64），其中包含 5~10 位数字的用户 id。解析失败返回 None。
 	"""
 	try:
-		outer = base64.b64decode(
-			_pad_b64(session.replace('-', '+').replace('_', '/'))
-		).decode('utf-8', 'replace')
+		outer = base64.b64decode(_pad_b64(session.replace('-', '+').replace('_', '/'))).decode('utf-8', 'replace')
 		parts = outer.split('|')
 		if len(parts) < 3:
 			return None
@@ -149,28 +147,52 @@ def extract_api_user(session: str) -> str | None:
 
 
 def validate_account(data: dict) -> tuple[bool, str, dict | None]:
-	"""校验并规范化单条账号（cookie 登录）。
+	"""校验并规范化单条账号（cookie 登录 / 邮箱密码登录，二者可只填其一）。
 
-	api_user 可留空：会尝试从 session 值里自动提取（与官方生成器一致），
-	提取失败才要求手动填写。返回 (是否通过, 错误信息, 规范化后的账号字典)。
+	- 邮箱 + 密码：浏览器真实登录。agentrouter 等平台的签到在登录时由服务端触发，
+	  只有这种方式能真正签到（session 模式只能查余额，无法签到）。
+	- Cookie（session）：api_user 可留空，会尝试从 session 值里自动提取（与官方生成器一致）。
+	返回 (是否通过, 错误信息, 规范化后的账号字典)。
 	"""
 	provider = (data.get('provider') or 'anyrouter').strip()
 	if not provider:
 		return False, 'provider 不能为空', None
 
+	email = (data.get('email') or '').strip()
+	password = str(data.get('password') or '').strip()
+	has_login = bool(email and password)
+	if email and not password:
+		return False, '填了邮箱就要填密码（邮箱密码需成对出现）', None
+	if password and not email:
+		return False, '填了密码就要填邮箱（邮箱密码需成对出现）', None
+
 	cookies = data.get('cookies')
 	if isinstance(cookies, str):
 		cookies = parse_cookies(cookies)
-	if not isinstance(cookies, dict) or not cookies.get('session'):
-		return False, 'cookie 里没解析出 session。可直接粘贴整段请求头（如 session=xxx; acw_tc=yyy），或只粘 session 的值', None
+	has_session = isinstance(cookies, dict) and bool(cookies.get('session'))
+
+	if not has_login and not has_session:
+		return (
+			False,
+			'缺少凭据：填 Cookie（session）或填邮箱+密码。注意 agentrouter 的签到在登录时触发，只有邮箱密码方式能真正签到',
+			None,
+		)
+
+	account = {'provider': provider}
+	if has_login:
+		account['email'] = email
+		account['password'] = password
 
 	api_user = (data.get('api_user') or '').strip()
-	if not api_user:
-		api_user = extract_api_user(str(cookies['session'])) or ''
+	if has_session:
+		account['cookies'] = cookies
 		if not api_user:
-			return False, 'api_user 不能为空（未能从 session 自动提取，请手动填写）', None
+			api_user = extract_api_user(str(cookies['session'])) or ''
+			if not api_user and not has_login:
+				return False, 'api_user 不能为空（未能从 session 自动提取，请手动填写）', None
+	if api_user:
+		account['api_user'] = api_user
 
-	account = {'provider': provider, 'api_user': api_user, 'cookies': cookies}
 	if data.get('name'):
 		account['name'] = data['name'].strip()
 	return True, '', account
@@ -192,6 +214,7 @@ def public_account(idx: int, acc: dict) -> dict:
 		'api_user': acc.get('api_user'),
 		'session_masked': mask_session(acc.get('cookies')),
 		'has_email': bool(acc.get('email') and acc.get('password')),
+		'email': acc.get('email'),
 	}
 
 
@@ -303,11 +326,14 @@ class Handler(BaseHTTPRequestHandler):
 			return
 
 		if path == '/api/status':
-			self._send_json(200, {
-				'running': is_checkin_running(),
-				'log_mtime': os.path.getmtime(get_log_file()) if os.path.isfile(get_log_file()) else None,
-				'accounts': len(load_accounts()),
-			})
+			self._send_json(
+				200,
+				{
+					'running': is_checkin_running(),
+					'log_mtime': os.path.getmtime(get_log_file()) if os.path.isfile(get_log_file()) else None,
+					'accounts': len(load_accounts()),
+				},
+			)
 			return
 
 		if path == '/api/settings':
@@ -384,6 +410,23 @@ class Handler(BaseHTTPRequestHandler):
 
 			body = self._read_json_body()
 			current = dict(accounts[idx])
+
+			# 邮箱密码：成对提交时更新；两者都留空=清除（退回 cookie 模式）；
+			# 只填邮箱、密码留空=保留原密码（编辑时无需重输）
+			if 'email' in body or 'password' in body:
+				new_email = str(body.get('email') or '').strip()
+				new_password = str(body.get('password') or '').strip()
+				if not new_email and not new_password:
+					current.pop('email', None)
+					current.pop('password', None)
+				elif new_email and new_password:
+					current['email'] = new_email
+					current['password'] = new_password
+				elif new_email and not new_password:
+					current['email'] = new_email
+				else:
+					self._send_json(400, {'error': '填了密码就要填邮箱（邮箱密码需成对出现）'})
+					return
 
 			# cookie 未提交时保留原值；提交则校验
 			if body.get('cookies') is not None and str(body['cookies']).strip():
@@ -536,10 +579,21 @@ INDEX_HTML = """<!DOCTYPE html>
           <input id="fName" placeholder="例如：主账号">
         </div>
       </div>
-      <label>Cookie（可直接粘贴整段请求头，如 <code>session=xxx; acw_tc=yyy</code>，或只粘 session 值）</label>
+      <div class="row">
+        <div>
+          <label>邮箱（邮箱密码登录，<b>agentrouter 必须用它签到</b>）</label>
+          <input id="fEmail" placeholder="you@example.com">
+        </div>
+        <div>
+          <label>密码（与邮箱成对填写）</label>
+          <input id="fPassword" type="password" placeholder="编辑时留空=保持不变">
+        </div>
+      </div>
+      <label>Cookie（可直接粘贴整段请求头，如 <code>session=xxx; acw_tc=yyy</code>，或只粘 session 值；已填邮箱密码时可留空）</label>
       <textarea id="fCookies" placeholder="session=你的session值"></textarea>
-      <label>api_user（new-api-user 请求头值，<b>可留空</b>：保存时会尝试从 session 自动提取）</label>
+      <label>api_user（new-api-user 请求头值，<b>可留空</b>：保存时从 session 自动提取，邮箱密码登录可自动获取）</label>
       <input id="fApiUser" placeholder="留空则自动提取">
+      <div class="hint">说明：agentrouter 的签到在<b>登录</b>时由服务端完成（无独立签到接口），session 方式只能查余额、无法签到；要真正签到请填邮箱+密码。anyrouter 两种方式都可签到。</div>
       <div class="msg" id="formMsg"></div>
       <div style="margin-top:12px; display:flex; gap:10px;">
         <button type="submit" id="submitBtn">保存账号</button>
@@ -596,7 +650,7 @@ function renderAccounts() {
         <span class="name">${esc(a.name || ('账号 ' + (a.index + 1)))}</span>
         <span class="tag">${esc(a.provider)}</span>
         ${a.has_email ? '<span class="tag">邮箱登录</span>' : ''}
-        <div class="detail">api_user: ${esc(a.api_user)} · session: ${esc(a.session_masked)}</div>
+        <div class="detail">${a.has_email ? '邮箱密码登录' : 'session 登录'}${a.has_email && a.session_masked !== '(未设置)' ? ' + session' : ''} · api_user: ${esc(a.api_user || '-')} · session: ${esc(a.session_masked)}${a.email ? ' · ' + esc(a.email) : ''}</div>
       </div>
       <div class="ops">
         <button class="secondary" onclick="editAccount(${a.index})">编辑</button>
@@ -633,8 +687,14 @@ $('accForm').addEventListener('submit', async (e) => {
     name: $('fName').value.trim() || undefined,
     cookies: $('fCookies').value.trim(),
     api_user: $('fApiUser').value.trim(),
+    email: $('fEmail').value.trim(),
+    password: $('fPassword').value,
   };
   if (editing >= 0 && !body.cookies) { delete body.cookies; } // 编辑时留空 cookie 表示不变
+  // 编辑时：邮箱不变、密码留空 → 只发 email（服务端视为改邮箱、密码保持不变）
+  if (editing >= 0 && body.email && !body.password && accounts[editing] && accounts[editing].has_email) {
+    delete body.password;
+  }
   try {
     if (editing >= 0) {
       const acc = await api('/api/accounts/' + editing, { method: 'PUT', body: JSON.stringify(body) });
@@ -658,6 +718,8 @@ function editAccount(i) {
   $('fCookies').value = '';           // 重新粘贴；留空表示不修改
   $('fCookies').placeholder = '留空表示保持原 cookie 不变';
   $('fApiUser').value = a.api_user || '';
+  $('fEmail').value = a.email || '';
+  $('fPassword').value = ''; // 密码不回显，留空=保持不变
   $('cancelEdit').style.display = '';
   setFormMsg('编辑模式：cookie 留空则保持不变');
   window.scrollTo({ top: 0, behavior: 'smooth' });

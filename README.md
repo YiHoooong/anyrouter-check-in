@@ -238,6 +238,7 @@
 - `bypass_method` (可选)：WAF 绕过方法
   - `"waf_cookies"`：使用 CloakBrowser 打开浏览器获取 WAF cookies 后再执行签到
   - 不设置或 `null`：直接使用用户 cookies 执行签到（适合无 WAF 保护的网站）
+- `checkin_on_login` (可选，默认 `false`)：签到在**登录**时由服务端完成（如 agentrouter 的每日登录奖励）。设为 `true` 时：邮箱密码登录 = 真正签到；session cookie 模式没有登录动作，脚本会如实报"签到未执行"
 - `waf_cookie_names` (可选)：绕过 WAF 所需 cookie 的名称列表，`bypass_method` 为 `waf_cookies` 时必须设置
 
 **配置示例**（完整）：
@@ -262,7 +263,7 @@
   - `sign_in_path: "/api/user/sign_in"`
 - `agentrouter`：
   - `bypass_method: "waf_cookies"`（需要获取 `acw_tc`）
-  - `sign_in_path: null`（查询用户信息时自动签到）
+  - `sign_in_path: null` + `checkin_on_login: true`（**签到在登录时由服务端完成**，无独立签到接口；用邮箱密码登录才能真正签到，session cookie 只能查余额）
   - `use_proxy: true`
 
 **重要提示**：
@@ -426,7 +427,9 @@ sudo docker compose down
 容器启动时会自动拉起一个小 Web 界面（端口 `8090`，仅本机可访问），可以可视化提交/管理账号（session cookie 登录）、一键触发签到并查看运行日志：
 
 1. 浏览器打开 http://localhost:8090
-2. 「添加账号」：选择平台（anyrouter / agentrouter），在 Cookie 框里粘贴浏览器 F12 复制出来的 session 值（也支持直接粘贴整段 Cookie 请求头），填 api_user，保存
+2. 「添加账号」：选择平台（anyrouter / agentrouter），两种登录方式任选（或都填，邮箱密码优先）：
+   - **邮箱 + 密码**：脚本用内置浏览器真实登录，成功后自动获取 cookies 与 api_user。agentrouter 的签到在登录时由服务端触发，**必须用这种方式才能真正签到**
+   - **Cookie**：粘贴 F12 复制的 session 值（支持整段 Cookie 请求头），api_user 可留空自动提取；agentrouter 此方式只能查余额、无法签到
 3. 点「立即签到」触发一次签到，下方日志区实时滚动显示运行结果
 4. 账号保存到 `data/accounts.json`，**优先于** `.env` 里的 `ANYROUTER_ACCOUNTS`，定时签到自动读取；手动触发与定时循环用文件锁互斥，不会同时运行
 

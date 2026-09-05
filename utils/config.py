@@ -23,6 +23,9 @@ class ProviderConfig:
 	waf_cookie_names: List[str] | None = None
 	use_proxy: bool = False
 	persist_profile: bool = False
+	# 签到在登录时由服务端完成（如 agentrouter 的 DailyCheckinQuota）：
+	# session 模式没有登录动作，无法签到，会诚实报失败并提示改用邮箱密码登录
+	checkin_on_login: bool = False
 
 	def __post_init__(self):
 		required_waf_cookies = set()
@@ -61,6 +64,7 @@ class ProviderConfig:
 			waf_cookie_names=data.get('waf_cookie_names', defaults.waf_cookie_names if defaults else None),
 			use_proxy=data.get('use_proxy', default_use_proxy),
 			persist_profile=data.get('persist_profile', default_persist_profile),
+			checkin_on_login=data.get('checkin_on_login', defaults.checkin_on_login if defaults else False),
 		)
 
 	def needs_waf_cookies(self) -> bool:
@@ -98,7 +102,10 @@ class AppConfig:
 				name='agentrouter',
 				domain='https://agentrouter.org',
 				login_path='/login',
-				sign_in_path=None,  # 无需签到接口，查询用户信息时自动完成签到
+				# 无独立签到接口（/api/user/sign_in 为 404）：签到在登录时由服务端完成，
+				# 前端登录响应的 checked_in 即签到结果。只有邮箱密码登录能触发签到。
+				sign_in_path=None,
+				checkin_on_login=True,
 				user_info_path='/api/user/self',
 				api_user_key='new-api-user',
 				bypass_method='waf_cookies',

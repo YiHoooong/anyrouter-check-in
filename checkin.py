@@ -437,6 +437,7 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 		provider_config,
 		api_user_override=resolved_api_user,
 		use_proxy=provider_config.use_proxy,
+		checked_in_via_login=auth_method == 'email/password',
 	)
 
 
@@ -448,6 +449,7 @@ def run_check_in_requests(
 	*,
 	api_user_override: str | None = None,
 	use_proxy: bool = False,
+	checked_in_via_login: bool = False,
 ) -> tuple[bool, dict | None, dict | None]:
 	"""执行 HTTP 签到请求（同步，避免在 async 上下文中使用阻塞 httpx）。"""
 	try:
@@ -496,6 +498,13 @@ def run_check_in_requests(
 
 			user_info_after = get_user_info(client, headers, user_info_url)
 			if user_info_after and user_info_after.get('success'):
+				if provider_config.checkin_on_login and not checked_in_via_login:
+					# 这类平台（如 agentrouter）签到在登录时由服务端完成，无独立签到接口；
+					# session 模式没有登录动作，本次实际并未签到，如实报失败
+					reason = '签到未执行：该平台签到在登录时触发，session 模式无法自动签到，请改用邮箱密码登录'
+					print(f'[FAILED] {account_name}: {reason}')
+					user_info_after['display'] += f'\n[WARN] {reason}'
+					return False, user_info_before, user_info_after
 				print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
 				return True, user_info_before, user_info_after
 			error = user_info_after.get('error', 'Unknown error') if user_info_after else 'Unknown error'
@@ -639,7 +648,9 @@ async def main():
 		for i, account in enumerate(accounts):
 			account_key = f'account_{i + 1}'
 			account_name = account.get_display_name(i)
-			if account_name in successful_account_names and not any(account_name in item for item in notification_content):
+			if account_name in successful_account_names and not any(
+				account_name in item for item in notification_content
+			):
 				if account_key in account_check_in_details:
 					notification_content.append(format_check_in_notification(account_check_in_details[account_key]))
 				else:

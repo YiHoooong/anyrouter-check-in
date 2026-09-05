@@ -47,3 +47,27 @@ def test_provider_from_dict_inherits_profile_persistence_from_defaults():
 	)
 
 	assert provider.persist_profile is True
+
+
+def test_builtin_agentrouter_checkin_on_login(monkeypatch):
+	monkeypatch.delenv('PROVIDERS', raising=False)
+
+	config = AppConfig.load_from_env()
+
+	# agentrouter 签到在登录时由服务端完成，无独立签到接口
+	assert config.providers['agentrouter'].checkin_on_login is True
+	assert config.providers['agentrouter'].sign_in_path is None
+	assert config.providers['agentrouter'].needs_manual_check_in() is False
+	# 其它 provider 默认关闭
+	assert config.providers['anyrouter'].checkin_on_login is False
+
+
+def test_checkin_on_login_inherits_and_overrides(monkeypatch):
+	monkeypatch.setenv(
+		'PROVIDERS',
+		json.dumps({'custom': {'domain': 'https://custom.example.com', 'checkin_on_login': True}}),
+	)
+
+	config = AppConfig.load_from_env()
+
+	assert config.providers['custom'].checkin_on_login is True
